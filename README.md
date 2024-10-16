@@ -19,7 +19,7 @@ go build
 ## Usage
 
 ```bash
-Usage of ./image-customize:
+Usage of chosi:
   -cloud-config string
         Path to cloud-init config
 ```
