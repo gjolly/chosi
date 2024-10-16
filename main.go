@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"syscall"
 )
 
 func downloadFile(url string, filepath string) error {
@@ -140,6 +141,7 @@ func configureCloudInit(mountPath, cloudInitConfigPath string) error {
 }
 
 func installExtraPackages(mountPath string, packages []string) error {
+	// TODO
 	return nil
 }
 
@@ -155,6 +157,12 @@ func customizeMount(mountPath, cloudInitConfigPath string, extraPackages []strin
 	}
 
 	return nil
+}
+
+// isRunningAsRoot checks if the program is running as root by checking the effective UID
+func isRunningAsRoot() bool {
+	// Using syscall to get the effective user ID (UID)
+	return syscall.Geteuid() == 0
 }
 
 var (
@@ -193,6 +201,11 @@ func ParseConfig(configPath string) (*Config, error) {
 func main() {
 	qcow2ImagePath := "ubuntu.qcow2.img"
 	rawImagePath := "ubuntu.img"
+
+	if !isRunningAsRoot() {
+		slog.Error("this program needs to run as root")
+		return
+	}
 
 	flag.Parse()
 	if *configPath == "" {
