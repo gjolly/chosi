@@ -1,4 +1,4 @@
-# chosi - Change OS image
+# chosi - Change OS Image
 
 A tool to customize a cloud-image from `cloud-images.ubuntu.com`.
 
@@ -17,6 +17,8 @@ go build
 ```
 
 ## Usage
+
+`chosi` needs to run as `root`.
 
 ```bash
 Usage of chosi:
