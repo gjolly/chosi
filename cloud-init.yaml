@@ -1,0 +1,12 @@
+datasource_list: [ "None" ]
+datasource:
+  None:
+    metadata:
+      local-hostname: "ubuntu"
+    userdata_raw: |
+      #cloud-config
+      chpasswd:
+        expire: false
+        users:
+          - name: root
+            password: $6$rounds=4096$.D6mj90qymJRUJcv$3LugFdGSHRPv6Wf8IVOxwq7OZjEN14mNBtjfa2KVpDkv0Qa.vV0MjbpfA46E6dpQBL7HNDFzzXyO3lJ7/nFDO1
