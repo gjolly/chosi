@@ -2,6 +2,20 @@
 
 A tool to customize a cloud-image from `cloud-images.ubuntu.com`.
 
+## Install/Build
+
+To install:
+
+```bash
+go install github.com/gjolly/chosi
+```
+
+To build:
+
+```bash
+go build
+```
+
 ## Usage
 
 ```bash
