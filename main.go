@@ -198,26 +198,26 @@ func ParseConfig(configPath string) (*Config, error) {
 	return config, nil
 }
 
-func main() {
+func mainWithExitCode() int {
 	qcow2ImagePath := "ubuntu.qcow2.img"
 	rawImagePath := "ubuntu.img"
 
 	if !isRunningAsRoot() {
 		slog.Error("this program needs to run as root")
-		return
+		return 1
 	}
 
 	flag.Parse()
 	if *configPath == "" {
 		flag.Usage()
-		return
+		return 2
 	}
 	logger := slog.Default()
 
 	config, err := ParseConfig(*configPath)
 	if err != nil {
 		slog.Error("failed to parse config file", "error", err)
-		return
+		return 3
 	}
 
 	if _, err := os.Stat(qcow2ImagePath); os.IsNotExist(err) {
@@ -225,7 +225,7 @@ func main() {
 		err := downloadFile(config.ImageURL, qcow2ImagePath)
 		if err != nil {
 			logger.Error("download failed", "error", err)
-			os.Exit(1)
+			return 4
 		}
 		logger.Info("download succeeded")
 	} else {
@@ -235,7 +235,7 @@ func main() {
 	err = convertQCOW2ToRaw(qcow2ImagePath, rawImagePath)
 	if err != nil {
 		logger.Error("failed to convert to raw image failed", "error", err)
-		os.Exit(2)
+		return 5
 	}
 	logger = logger.With("image", rawImagePath)
 	logger.Info("image converted to raw")
@@ -243,7 +243,7 @@ func main() {
 	loopDevice, err := attachLoopDevice(rawImagePath)
 	if err != nil {
 		logger.Error("failed to attach loop device", "error", err)
-		return
+		return 6
 	}
 	defer detachLoopDevice(loopDevice)
 	logger = logger.With("device", loopDevice)
@@ -252,7 +252,7 @@ func main() {
 	mountPath, err := os.MkdirTemp("", "mount*")
 	if err != nil {
 		logger.Error("failed to create mount directory", "error", err)
-		return
+		return 7
 	}
 	defer os.RemoveAll(mountPath)
 	logger = logger.With("mountPath", mountPath)
@@ -260,7 +260,7 @@ func main() {
 	err = mountLoopDevice(loopDevice, mountPath)
 	if err != nil {
 		logger.Error("failed to mount loop device", "error", err)
-		return
+		return 8
 	}
 	defer unmountLoopDevice(mountPath)
 	logger.Info("image mounted")
@@ -268,7 +268,13 @@ func main() {
 	err = customizeMount(mountPath, config.CloudInitConfigPath, config.ExtraPackages)
 	if err != nil {
 		logger.Error("failed to modify image", "error", err)
-		return
+		return 9
 	}
 	logger.Info("image customization done")
+
+	return 0
+}
+
+func main() {
+	os.Exit(mainWithExitCode())
 }
