@@ -32,7 +32,8 @@ Example of config file:
 {
     "cloudinit_config_path": "./cloud-init.yaml",
     "image_url": "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img",
-    "extra_packages": ["./my_package.deb"]
+    "extra_packages": ["./my_package.deb"],
+    "kernel_version": ""
 }
 ```
 

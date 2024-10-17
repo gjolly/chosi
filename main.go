@@ -1,16 +1,19 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"path"
+	"runtime"
 	"syscall"
 )
 
@@ -74,12 +77,32 @@ func attachLoopDevice(rawImage string) (string, error) {
 
 // mountLoopDevice mounts the loop device to the given mount path
 func mountLoopDevice(loopDevice, mountPath string) error {
-	partition := fmt.Sprintf("%sp1", loopDevice)
+	rootPartition := fmt.Sprintf("%sp1", loopDevice)
 	// Command: mount loopDevice mountPath
-	cmd := exec.Command("mount", partition, mountPath)
+	cmd := exec.Command("mount", rootPartition, mountPath)
 
 	// Run the mount command
 	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to mount loop device: %w: %s", err, output)
+	}
+
+	xboot := fmt.Sprintf("%sp16", loopDevice)
+	// Command: mount loopDevice mountPath
+	cmd = exec.Command("mount", xboot, path.Join(mountPath, "/boot"))
+
+	// Run the mount command
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to mount loop device: %w: %s", err, output)
+	}
+
+	esp := fmt.Sprintf("%sp15", loopDevice)
+	// Command: mount loopDevice mountPath
+	cmd = exec.Command("mount", esp, path.Join(mountPath, "/boot/efi"))
+
+	// Run the mount command
+	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to mount loop device: %w: %s", err, output)
 	}
@@ -90,7 +113,7 @@ func mountLoopDevice(loopDevice, mountPath string) error {
 // unmountLoopDevice unmounts the loop device from the given mount path
 func unmountLoopDevice(mountPath string) error {
 	// Command: umount mountPath
-	cmd := exec.Command("umount", mountPath)
+	cmd := exec.Command("umount", "-R", mountPath)
 
 	// Run the unmount command
 	output, err := cmd.CombinedOutput()
@@ -141,11 +164,99 @@ func configureCloudInit(mountPath, cloudInitConfigPath string) error {
 }
 
 func installExtraPackages(mountPath string, packages []string) error {
-	// TODO
+	tmpDirPath := "/tmp/packages"
+	absTmpDirPath := path.Join(mountPath, "/tmp/packages")
+	err := os.Mkdir(absTmpDirPath, 0777)
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(absTmpDirPath)
+
+	for _, pkg := range packages {
+		cmd := exec.Command("cp", pkg, absTmpDirPath)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed copy package: %w: %s", err, output)
+		}
+
+		pkgPath := path.Join(tmpDirPath, pkg)
+		cmd = exec.Command("chroot", mountPath, "dpkg", "--unpack", pkgPath)
+		output, err = cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to unpack package: %w: %s", err, output)
+		}
+	}
+
 	return nil
 }
 
-func customizeMount(mountPath, cloudInitConfigPath string, extraPackages []string) error {
+//go:embed grub.cfg.tmpl
+var grubConfigTemplate string
+
+func configureGrub(mountPath, kernel, initrd, cmdline string) error {
+	config := struct {
+		Kernel  string
+		Initrd  string
+		Cmdline string
+	}{
+		Kernel:  kernel,
+		Initrd:  initrd,
+		Cmdline: cmdline,
+	}
+
+	tmpl, err := template.New("grub_config").Parse(grubConfigTemplate)
+	if err != nil {
+		return err
+	}
+
+	grubConfigPath := path.Join(mountPath, "/boot/grub/grub.cfg")
+	grubConfigFile, err := os.Create(grubConfigPath)
+	if err != nil {
+		return fmt.Errorf("failed to open grub config: %w", err)
+	}
+	defer grubConfigFile.Close()
+
+	err = tmpl.Execute(grubConfigFile, config)
+	if err != nil {
+		return fmt.Errorf("failed to write grub config: %w", err)
+	}
+
+	return nil
+}
+
+func buildInitrd(mountPath, kernelVersion string) error {
+	cmd := exec.Command("chroot", mountPath, "update-initramfs", "-c", "-k", kernelVersion)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("update-initramfs failed: %w: %s", err, output)
+	}
+
+	return nil
+}
+
+func setupBoot(mountPath, kernelVersion string) error {
+	err := buildInitrd(mountPath, kernelVersion)
+	if err != nil {
+		return fmt.Errorf("failed to build initrd: %w", err)
+	}
+
+	cmdline := "root=LABEL=cloudimg-rootfs ro console=tty1 console=ttyS0"
+	if runtime.GOARCH == "arm64" {
+		cmdline = "root=LABEL=cloudimg-rootfs ro"
+	}
+	kernel := fmt.Sprintf("vmlinuz-%s", kernelVersion)
+	initrd := fmt.Sprintf("initrd.img-%s", kernelVersion)
+
+	err = configureGrub(mountPath, kernel, initrd, cmdline)
+	if err != nil {
+		return fmt.Errorf("failed to configure grub: %w", err)
+	}
+
+	return nil
+}
+
+func customizeMount(mountPath, cloudInitConfigPath string, extraPackages []string, kernelVersion string) error {
 	err := configureCloudInit(mountPath, cloudInitConfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to configure cloud-init: %w", err)
@@ -154,6 +265,15 @@ func customizeMount(mountPath, cloudInitConfigPath string, extraPackages []strin
 	err = installExtraPackages(mountPath, extraPackages)
 	if err != nil {
 		return fmt.Errorf("failed to install extra packages: %w", err)
+	}
+
+	if kernelVersion == "" {
+		return nil
+	}
+
+	err = setupBoot(mountPath, kernelVersion)
+	if err != nil {
+		return fmt.Errorf("failed to setup boot: %w", err)
 	}
 
 	return nil
@@ -173,6 +293,7 @@ type Config struct {
 	CloudInitConfigPath string   `json:"cloudinit_config_path"`
 	ImageURL            string   `json:"image_url"`
 	ExtraPackages       []string `json:"extra_packages"`
+	KernelVersion       string   `json:"kernel_version"`
 }
 
 func ParseConfig(configPath string) (*Config, error) {
@@ -265,7 +386,7 @@ func mainWithExitCode() int {
 	defer unmountLoopDevice(mountPath)
 	logger.Info("image mounted")
 
-	err = customizeMount(mountPath, config.CloudInitConfigPath, config.ExtraPackages)
+	err = customizeMount(mountPath, config.CloudInitConfigPath, config.ExtraPackages, config.KernelVersion)
 	if err != nil {
 		logger.Error("failed to modify image", "error", err)
 		return 9
