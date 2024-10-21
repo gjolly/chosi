@@ -7,7 +7,7 @@ A tool to customize a cloud-image from `cloud-images.ubuntu.com`.
 To install:
 
 ```bash
-go install github.com/gjolly/chosi
+go install github.com/gjolly/chosi@latest
 ```
 
 To build:
