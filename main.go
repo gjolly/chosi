@@ -87,9 +87,10 @@ func mountLoopDevice(loopDevice, mountPath string) error {
 		return fmt.Errorf("failed to mount loop device: %w: %s", err, output)
 	}
 
-	xboot := fmt.Sprintf("%sp16", loopDevice)
-	// Command: mount loopDevice mountPath
-	cmd = exec.Command("mount", xboot, path.Join(mountPath, "/boot"))
+	if runtime.GOARCH != "arm64" {
+		xboot := fmt.Sprintf("%sp16", loopDevice)
+		cmd = exec.Command("mount", xboot, path.Join(mountPath, "/boot"))
+	}
 
 	// Run the mount command
 	output, err = cmd.CombinedOutput()
@@ -98,7 +99,6 @@ func mountLoopDevice(loopDevice, mountPath string) error {
 	}
 
 	esp := fmt.Sprintf("%sp15", loopDevice)
-	// Command: mount loopDevice mountPath
 	cmd = exec.Command("mount", esp, path.Join(mountPath, "/boot/efi"))
 
 	// Run the mount command
