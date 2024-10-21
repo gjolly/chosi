@@ -311,6 +311,7 @@ type Config struct {
 	ExtraPackages       []string `json:"extra_packages"`
 	RemovePackages      []string `json:"remove_packages"`
 	KernelVersion       string   `json:"kernel_version"`
+	OutputFormat        string   `json:"output_format"`
 }
 
 func ParseConfig(configPath string) (*Config, error) {
@@ -336,45 +337,9 @@ func ParseConfig(configPath string) (*Config, error) {
 	return config, nil
 }
 
-func mainWithExitCode() int {
-	qcow2ImagePath := "ubuntu.qcow2.img"
-	rawImagePath := "ubuntu.img"
-
-	if !isRunningAsRoot() {
-		slog.Error("this program needs to run as root")
-		return 1
-	}
-
-	flag.Parse()
-	if *configPath == "" {
-		flag.Usage()
-		return 2
-	}
+func mountImageAndModifyFilesystem(rawImagePath string, config *Config) int {
 	logger := slog.Default()
 
-	config, err := ParseConfig(*configPath)
-	if err != nil {
-		slog.Error("failed to parse config file", "error", err)
-		return 3
-	}
-
-	if _, err := os.Stat(qcow2ImagePath); os.IsNotExist(err) {
-		logger.Info(fmt.Sprintf("downloading file from %s", config.ImageURL))
-		err := downloadFile(config.ImageURL, qcow2ImagePath)
-		if err != nil {
-			logger.Error("download failed", "error", err)
-			return 4
-		}
-		logger.Info("download succeeded")
-	} else {
-		logger.Info("file found, skip download")
-	}
-
-	err = convertQCOW2ToRaw(qcow2ImagePath, rawImagePath)
-	if err != nil {
-		logger.Error("failed to convert to raw image failed", "error", err)
-		return 5
-	}
 	logger = logger.With("image", rawImagePath)
 	logger.Info("image converted to raw")
 
@@ -413,6 +378,100 @@ func mainWithExitCode() int {
 	return 0
 }
 
+func downloadImageIfNeeded(qcow2ImagePath string, config *Config) error {
+	if _, err := os.Stat(qcow2ImagePath); os.IsNotExist(err) {
+		slog.Info(fmt.Sprintf("downloading file from %s", config.ImageURL))
+		err := downloadFile(config.ImageURL, qcow2ImagePath)
+		if err != nil {
+			return err
+		}
+		slog.Info("download succeeded")
+	} else {
+		slog.Info("file found, skip download")
+	}
+
+	return nil
+}
+
+func convertImageToFormat(rawImagePath, outputPath, format string) error {
+	switch format {
+	case "vhd":
+		imageStat, err := os.Stat(rawImagePath)
+		if err != nil {
+			return fmt.Errorf("failed to get image stat: %w", err)
+		}
+		roundedSize := ((imageStat.Size()/1024^2)+1)*1024 ^ 2
+
+		cmdResize := exec.Command("qemu-img", "resize", "-f", "raw", rawImagePath, fmt.Sprintf("%d", roundedSize))
+		output, err := cmdResize.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to re-size image: %w: %s", err, output)
+		}
+
+		cmdConvert := exec.Command("qemu-img", "convert", "-f", "raw", "-o", "subformat=fixed,force_size", "-O", "vpc", rawImagePath, outputPath)
+		output, err = cmdConvert.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to convert image: %w: %s", err, output)
+		}
+	default:
+		return errors.New("format not implemented")
+	}
+
+	return nil
+}
+
+func customizeImage() int {
+	qcow2ImagePath := "ubuntu.qcow2.img"
+	rawImagePath := "ubuntu.img"
+
+	if !isRunningAsRoot() {
+		slog.Error("this program needs to run as root")
+		return 1
+	}
+
+	flag.Parse()
+	if *configPath == "" {
+		flag.Usage()
+		return 2
+	}
+
+	config, err := ParseConfig(*configPath)
+	if err != nil {
+		slog.Error("failed to parse config file", "error", err)
+		return 3
+	}
+
+	err = downloadImageIfNeeded(qcow2ImagePath, config)
+	if err != nil {
+		slog.Error("failed to download image", "error", err)
+		return 4
+	}
+
+	err = convertQCOW2ToRaw(qcow2ImagePath, rawImagePath)
+	if err != nil {
+		slog.Error("failed to convert to raw image failed", "error", err)
+		return 5
+	}
+
+	code := mountImageAndModifyFilesystem(rawImagePath, config)
+	if err != nil {
+		return code
+	}
+
+	if config.OutputFormat != "" {
+		slog.Info("converting image format")
+
+		outputPath := fmt.Sprintf("%s.%s", rawImagePath, config.OutputFormat)
+		err = convertImageToFormat(rawImagePath, outputPath, config.OutputFormat)
+		if err != nil {
+			slog.Error("failed to modify image", "error", err)
+			return 9
+		}
+	}
+
+	return 0
+}
+
 func main() {
-	os.Exit(mainWithExitCode())
+	os.Exit(customizeImage())
 }

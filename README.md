@@ -34,6 +34,7 @@ Example of config file:
     "image_url": "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img",
     "extra_packages": ["./my_package.deb"],
     "remove_packages": ["vim"],
+    "output_format": "",
     "kernel_version": ""
 }
 ```
