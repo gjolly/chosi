@@ -175,7 +175,8 @@ func installExtraPackages(mountPath string, packages []string) error {
 			return fmt.Errorf("failed copy package: %w: %s", err, output)
 		}
 
-		pkgPath := path.Join(tmpDirPath, pkg)
+		pkgName := path.Base(pkg)
+		pkgPath := path.Join(tmpDirPath, pkgName)
 		cmd = exec.Command("chroot", mountPath, "dpkg", "--unpack", pkgPath)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
@@ -252,24 +253,43 @@ func setupBoot(mountPath, kernelVersion string) error {
 	return nil
 }
 
-func customizeMount(mountPath, cloudInitConfigPath string, extraPackages []string, kernelVersion string) error {
-	err := configureCloudInit(mountPath, cloudInitConfigPath)
+func RemovePackages(mountPath string, packages []string) error {
+	for _, pkg := range packages {
+		cmd := exec.Command("chroot", mountPath, "dpkg", "--purge", pkg)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to remove package: %w: %s", err, output)
+		}
+	}
+
+	return nil
+}
+
+func customizeMount(mountPath string, config *Config) error {
+	err := configureCloudInit(mountPath, config.CloudInitConfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to configure cloud-init: %w", err)
 	}
 
-	err = installExtraPackages(mountPath, extraPackages)
-	if err != nil {
-		return fmt.Errorf("failed to install extra packages: %w", err)
+	if len(config.RemovePackages) > 0 {
+		err = RemovePackages(mountPath, config.RemovePackages)
+		if err != nil {
+			return fmt.Errorf("failed to remove packages: %w", err)
+		}
 	}
 
-	if kernelVersion == "" {
-		return nil
+	if len(config.ExtraPackages) > 0 {
+		err = installExtraPackages(mountPath, config.ExtraPackages)
+		if err != nil {
+			return fmt.Errorf("failed to install extra packages: %w", err)
+		}
 	}
 
-	err = setupBoot(mountPath, kernelVersion)
-	if err != nil {
-		return fmt.Errorf("failed to setup boot: %w", err)
+	if config.KernelVersion != "" {
+		err = setupBoot(mountPath, config.KernelVersion)
+		if err != nil {
+			return fmt.Errorf("failed to setup boot: %w", err)
+		}
 	}
 
 	return nil
@@ -289,6 +309,7 @@ type Config struct {
 	CloudInitConfigPath string   `json:"cloudinit_config_path"`
 	ImageURL            string   `json:"image_url"`
 	ExtraPackages       []string `json:"extra_packages"`
+	RemovePackages      []string `json:"remove_packages"`
 	KernelVersion       string   `json:"kernel_version"`
 }
 
@@ -382,7 +403,7 @@ func mainWithExitCode() int {
 	defer unmountLoopDevice(mountPath)
 	logger.Info("image mounted")
 
-	err = customizeMount(mountPath, config.CloudInitConfigPath, config.ExtraPackages, config.KernelVersion)
+	err = customizeMount(mountPath, config)
 	if err != nil {
 		logger.Error("failed to modify image", "error", err)
 		return 9
