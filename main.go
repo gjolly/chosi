@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -43,19 +44,6 @@ func downloadFile(url string, filepath string) error {
 		return fmt.Errorf("error while writing to file: %w", err)
 	}
 
-	return nil
-}
-
-// convertQCOW2ToRaw converts a QCOW2 image to a raw image using qemu-img
-func convertQCOW2ToRaw(qcow2File, rawFile string) error {
-	// Command: qemu-img convert -f qcow2 -O raw qcow2File rawFile
-	cmd := exec.Command("qemu-img", "convert", "-f", "qcow2", "-O", "raw", qcow2File, rawFile)
-
-	// Run the command and capture any error
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to convert qcow2 to raw: %w: %s", err, output)
-	}
 	return nil
 }
 
@@ -191,13 +179,20 @@ func installExtraPackages(mountPath string, packages []string) error {
 var grubConfigTemplate string
 
 func configureGrub(mountPath, kernel, initrd, cmdline string) error {
+	// if there is no xboot partition, the path is /boot/xxx otherwise
+	// it's only /xxx.
+	prefix := ""
+	if runtime.GOARCH == "arm64" {
+		prefix = "boot/"
+	}
+
 	config := struct {
 		Kernel  string
 		Initrd  string
 		Cmdline string
 	}{
-		Kernel:  kernel,
-		Initrd:  initrd,
+		Kernel:  prefix + kernel,
+		Initrd:  prefix + initrd,
 		Cmdline: cmdline,
 	}
 
@@ -393,28 +388,51 @@ func downloadImageIfNeeded(qcow2ImagePath string, config *Config) error {
 	return nil
 }
 
-func convertImageToFormat(rawImagePath, outputPath, format string) error {
-	switch format {
-	case "vhd":
-		imageStat, err := os.Stat(rawImagePath)
+const (
+	FormatRAW   = "raw"
+	FormatQCOW2 = "qcow2"
+	FormatVHD   = "vhd"
+)
+
+func convertImageToFormat(inputFile, outputFile, inputFormat, outputFormat string, removeInput bool) error {
+	switch outputFormat {
+	case FormatVHD:
+		imageStat, err := os.Stat(inputFile)
 		if err != nil {
 			return fmt.Errorf("failed to get image stat: %w", err)
 		}
-		roundedSize := ((imageStat.Size()/1024^2)+1)*1024 ^ 2
+		mebibyte := int64(math.Pow(1024, 2))
+		roundedSize := ((imageStat.Size() / mebibyte) + 1) * mebibyte
 
-		cmdResize := exec.Command("qemu-img", "resize", "-f", "raw", rawImagePath, fmt.Sprintf("%d", roundedSize))
+		cmdResize := exec.Command("qemu-img", "resize", "-f", inputFormat, inputFile, fmt.Sprintf("%d", roundedSize))
 		output, err := cmdResize.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("failed to re-size image: %w: %s", err, output)
 		}
 
-		cmdConvert := exec.Command("qemu-img", "convert", "-f", "raw", "-o", "subformat=fixed,force_size", "-O", "vpc", rawImagePath, outputPath)
+		cmdConvert := exec.Command("qemu-img", "convert", "-f", inputFormat, "-o", "subformat=fixed,force_size", "-O", "vpc", inputFile, outputFile)
 		output, err = cmdConvert.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("failed to convert image: %w: %s", err, output)
 		}
+	case FormatRAW:
+		// Command: qemu-img convert -f qcow2 -O raw qcow2File rawFile
+		cmd := exec.Command("qemu-img", "convert", "-f", inputFormat, "-O", FormatRAW, inputFile, outputFile)
+
+		// Run the command and capture any error
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed to convert image to raw: %w: %s", err, output)
+		}
 	default:
 		return errors.New("format not implemented")
+	}
+
+	if removeInput {
+		err := os.Remove(inputFile)
+		if err != nil {
+			return fmt.Errorf("failed to remove intermediary raw file: %w", err)
+		}
 	}
 
 	return nil
@@ -447,7 +465,7 @@ func customizeImage() int {
 		return 4
 	}
 
-	err = convertQCOW2ToRaw(qcow2ImagePath, rawImagePath)
+	err = convertImageToFormat(qcow2ImagePath, rawImagePath, FormatQCOW2, FormatRAW, false)
 	if err != nil {
 		slog.Error("failed to convert to raw image failed", "error", err)
 		return 5
@@ -462,7 +480,7 @@ func customizeImage() int {
 		slog.Info("converting image format")
 
 		outputPath := fmt.Sprintf("%s.%s", rawImagePath, config.OutputFormat)
-		err = convertImageToFormat(rawImagePath, outputPath, config.OutputFormat)
+		err = convertImageToFormat(rawImagePath, outputPath, FormatRAW, config.OutputFormat, true)
 		if err != nil {
 			slog.Error("failed to modify image", "error", err)
 			return 9
